@@ -92,7 +92,7 @@ interface SyncSummary {
   warnings: string[];
 }
 
-Deno.serve(async () => {
+Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const balldontlieKey = Deno.env.get("BALLDONTLIE_API_KEY");
@@ -121,13 +121,21 @@ Deno.serve(async () => {
       return Response.json({ ok: false, error: "BALLDONTLIE_API_KEY is not set" });
     }
 
+    // start_date/end_date query params let this be invoked manually for a
+    // backfill or a schema-verification test run against a populated date
+    // range; the scheduled cron call omits them and gets the default
+    // "today plus the next week" window.
+    const requestUrl = new URL(req.url);
     const today = new Date();
-    const endDate = new Date(today);
-    endDate.setDate(endDate.getDate() + 6);
+    const defaultEnd = new Date(today);
+    defaultEnd.setDate(defaultEnd.getDate() + 6);
+
+    const startDate = requestUrl.searchParams.get("start_date") ?? isoDate(today);
+    const endDate = requestUrl.searchParams.get("end_date") ?? isoDate(defaultEnd);
 
     const gamesUrl = new URL("https://api.balldontlie.io/v1/games");
-    gamesUrl.searchParams.set("start_date", isoDate(today));
-    gamesUrl.searchParams.set("end_date", isoDate(endDate));
+    gamesUrl.searchParams.set("start_date", startDate);
+    gamesUrl.searchParams.set("end_date", endDate);
     gamesUrl.searchParams.set("per_page", "100");
 
     const gamesRes = await fetch(gamesUrl, {
