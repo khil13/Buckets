@@ -13,6 +13,19 @@ data sync job. No props, model, or bet tracking yet.
 - Zod for validating all external data (API responses and DB rows)
 - Vitest for unit tests
 
+## Hosting
+
+Currently deployed to **GitHub Pages** (`khil13.github.io/Buckets/`) as a
+free interim host via `.github/workflows/deploy-pages.yml`, which builds
+and deploys on every push to `main`. This requires hash-based routing
+(`createHashRouter` in `src/router.tsx`) and a `VITE_BASE_PATH=/Buckets/`
+build-time override (`vite.config.ts`), since Pages serves a project site
+under a subpath with no server-side rewrites.
+
+`netlify.toml` and Netlify's SPA redirect config are left in place — moving
+to Netlify later means connecting the repo there (see steps below) and
+switching `src/router.tsx` back to `createBrowserRouter`.
+
 ## Local setup
 
 ```bash
@@ -56,20 +69,17 @@ Supabase dashboard — **never** commit these):
 (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are auto-injected by
 Supabase for every edge function — nothing to set.)
 
-To run it on a schedule, add a `pg_cron` job that calls the function once a
-day, e.g. via the SQL editor:
+It runs on a schedule via `pg_cron` (`supabase/migrations/20260917080100_schedule_daily_sync_cron.sql`),
+once daily at 08:07 UTC, calling itself through `pg_net` from inside the
+database rather than an external scheduler. To change the time or add a
+second run, `cron.schedule('daily-sync', ...)` with a new cron expression
+replaces the existing job of the same name.
 
-```sql
-select cron.schedule(
-  'daily-sync',
-  '0 9 * * *', -- 9am UTC daily; adjust to your timezone
-  $$
-  select net.http_post(
-    url := 'https://<your-project-ref>.functions.supabase.co/daily-sync',
-    headers := '{"Content-Type": "application/json"}'::jsonb
-  );
-  $$
-);
+You can also invoke it manually with an optional `start_date`/`end_date`
+override — useful for backfilling or re-verifying against a specific range:
+
+```bash
+curl "https://smtpfhinrmjpxxthqnie.functions.supabase.co/daily-sync?start_date=2026-02-03&end_date=2026-02-03"
 ```
 
 The function has `verify_jwt` disabled since it's an internal scheduled job
@@ -77,13 +87,12 @@ with no user-facing auth — it's safe because every write is an idempotent
 upsert, but don't put anything sensitive behind it later without adding a
 shared-secret check.
 
-**Known gap:** this was built in a sandboxed dev environment whose network
-egress blocks both balldontlie's and The Odds API's docs sites, so the zod
-schemas in `src/lib/schemas/{balldontlie,oddsapi}.ts` (and their duplicates
-in the edge function) are written from well-established public API shapes,
-not a verified live response. Once you add real API keys, check a `sync_log`
-row after the first run — if parsing fails, the fix is isolated to those
-schema files.
+**Verified against live data:** the `balldontlie` integration has been
+confirmed against a real, populated response (a February 2026 date range) —
+the zod schema in `src/lib/schemas/balldontlie.ts` and its edge-function
+duplicate parse real games correctly (see `CLAUDE.md`'s Status section).
+`ODDS_API_KEY` is still unset, so `oddsapi.ts`'s schemas remain unverified
+against a live response until that key is added.
 
 ## Data honesty
 

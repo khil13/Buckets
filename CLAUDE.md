@@ -61,22 +61,31 @@ Buckets is a personal NBA research app: everything I want to check before placin
 
 ## Status
 
-**Phase 1 (Foundation): scaffolded, awaiting real API keys.**
+**Phase 1 (Foundation): live on GitHub Pages, balldontlie verified, still needs an Odds API key.**
 
 - Supabase project: a dedicated `buckets` project was created (separate from
   any other unrelated Supabase project on this account) — see project id in
   your Supabase dashboard. Schema (`teams`, `games`, `team_game_box_scores`,
   `odds_snapshots`, `sync_log`) is applied with RLS (read-only anon access).
-- `daily-sync` edge function is deployed but has no API keys configured yet
-  (`BALLDONTLIE_API_KEY`, `ODDS_API_KEY`) — set them as Supabase secrets, then
-  wire up a `pg_cron` schedule (see README) to start populating real data.
-- Frontend: Slate + Game Detail pages are built and tested against the
-  schema, but haven't been checked against live data yet since no keys are
-  set. Advanced team metrics (off/def rating, pace) are intentionally left
-  blank rather than estimated from insufficient inputs — see README's "Data
-  honesty" section.
-- Next: add real API keys, verify a `sync_log` row after the first live
-  `daily-sync` run, fix any field-name mismatches in
-  `src/lib/schemas/{balldontlie,oddsapi}.ts` if the zod parse fails, then
-  confirm the Slate/Game Detail pages render real games end to end before
-  starting Phase 2.
+- `daily-sync` edge function is deployed with `BALLDONTLIE_API_KEY` set and
+  **verified against a real, populated response** (Feb 2026 date range: 10
+  games, 20 teams, 20 box scores upserted correctly, zero schema errors).
+  `ODDS_API_KEY` is still not set, so odds sync is skipped (logged as a
+  warning, not an error) until that key is added.
+- Scheduled via `pg_cron` + `pg_net` (`supabase/migrations/20260917080*.sql`)
+  to run daily at 08:07 UTC — no external scheduler needed.
+- Hosting: deployed to GitHub Pages (`khil13.github.io/Buckets/`) as a free
+  interim host since Netlify wasn't available (no credits) — see README's
+  "Hosting" section. `netlify.toml` is kept in place for an easy switch
+  later.
+- Frontend: Slate + Game Detail pages are built, tested against the schema,
+  and confirmed rendering live (empty-state correctly shown during the
+  off-season, since today's date has no games — the Feb 2026 backfill data
+  used for verification is intentionally left in the DB as real historical
+  data, not cleaned up). Advanced team metrics (off/def rating, pace) are
+  intentionally left blank rather than estimated from insufficient inputs —
+  see README's "Data honesty" section.
+- Next: get an Odds API key, verify `src/lib/schemas/oddsapi.ts` against a
+  live response the same way balldontlie was verified, confirm odds show up
+  on the Slate page once the season starts (or via a manual backfill call),
+  then move to Phase 2.
