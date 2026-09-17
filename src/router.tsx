@@ -1,9 +1,13 @@
-import { createBrowserRouter } from "react-router-dom";
+import { createHashRouter } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { Slate } from "./pages/Slate";
 import { GameDetail } from "./pages/GameDetail";
 
-export const router = createBrowserRouter([
+// Hash routing avoids needing server-side rewrites for a client-rendered
+// SPA — required on GitHub Pages (a static host with no rewrite rules).
+// Switch to createBrowserRouter (paired with netlify.toml's existing SPA
+// redirect) if/when this moves to Netlify.
+export const router = createHashRouter([
   {
     element: <Layout />,
     children: [
