@@ -28,7 +28,7 @@ export interface TeamContext {
  */
 export function buildTeamContext(
   team: TeamRow,
-  teamId: number,
+  teamId: string,
   teamGames: GameRow[],
   targetGame: GameRow,
   boxScores: TeamGameBoxScoreRow[],

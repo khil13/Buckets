@@ -5,12 +5,13 @@ import type { OddsSnapshotRow } from "./schemas/db";
 function snapshot(overrides: Partial<OddsSnapshotRow>): OddsSnapshotRow {
   return {
     id: 1,
-    game_id: 1,
+    game_id: "game-1",
     book: "draftkings",
     market: "spread",
     side: "home",
     line: -3.5,
     price: -110,
+    fair_price: 100,
     captured_at: "2025-01-01T00:00:00Z",
     ...overrides,
   };
@@ -25,7 +26,9 @@ describe("computeBestLines", () => {
     ];
 
     const result = computeBestLines(snapshots);
-    expect(result).toEqual([{ market: "spread", side: "home", line: -3.5, price: -105, book: "fanduel" }]);
+    expect(result).toEqual([
+      { market: "spread", side: "home", line: -3.5, price: -105, fairPrice: 100, book: "fanduel" },
+    ]);
   });
 
   it("only uses the latest snapshot per book/market/side", () => {
@@ -35,7 +38,9 @@ describe("computeBestLines", () => {
     ];
 
     const result = computeBestLines(snapshots);
-    expect(result).toEqual([{ market: "spread", side: "home", line: -3, price: -110, book: "draftkings" }]);
+    expect(result).toEqual([
+      { market: "spread", side: "home", line: -3, price: -110, fairPrice: 100, book: "draftkings" },
+    ]);
   });
 
   it("groups markets and sides independently", () => {
@@ -47,9 +52,30 @@ describe("computeBestLines", () => {
 
     const result = computeBestLines(snapshots);
     expect(result).toHaveLength(3);
-    expect(result).toContainEqual({ market: "moneyline", side: "home", line: null, price: -150, book: "draftkings" });
-    expect(result).toContainEqual({ market: "moneyline", side: "away", line: null, price: 130, book: "draftkings" });
-    expect(result).toContainEqual({ market: "total", side: "over", line: 220.5, price: -105, book: "fanduel" });
+    expect(result).toContainEqual({
+      market: "moneyline",
+      side: "home",
+      line: null,
+      price: -150,
+      fairPrice: 100,
+      book: "draftkings",
+    });
+    expect(result).toContainEqual({
+      market: "moneyline",
+      side: "away",
+      line: null,
+      price: 130,
+      fairPrice: 100,
+      book: "draftkings",
+    });
+    expect(result).toContainEqual({
+      market: "total",
+      side: "over",
+      line: 220.5,
+      price: -105,
+      fairPrice: 100,
+      book: "fanduel",
+    });
   });
 
   it("returns an empty array for no snapshots", () => {
