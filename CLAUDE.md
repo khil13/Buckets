@@ -13,8 +13,11 @@ Buckets is a personal NBA research app: everything I want to check before placin
 - **Charts:** Recharts
 
 ## Data sources (verify current pricing/limits before wiring up)
-- **Stats, schedule, box scores:** balldontlie NBA API (or similar hosted API). Avoid scraping stats.nba.com directly from servers — it blocks cloud IPs.
-- **Odds & props:** The Odds API (spreads, totals, moneylines, player props, multiple books)
+- **Stats, schedule, box scores, odds & props:** [SportsGameOdds](https://sportsgameodds.com) — one API for
+  schedule, team/player box scores, and odds (spreads/totals/moneylines/props) across multiple books, plus a
+  pre-computed no-vig "fair" price per market. Originally planned as balldontlie (stats) + The Odds API (odds)
+  as two separate vendors, until testing the account's actual API key showed SportsGameOdds covers both in one
+  call with richer data (see Status). Avoid scraping stats.nba.com directly from servers — it blocks cloud IPs.
 - **Injuries:** source TBD — manual entry fallback is acceptable for v1
 - All API keys live in Supabase secrets / `.env.local`, never committed. Provide `.env.example`.
 - Cache everything in Supabase; the frontend never hits third-party APIs directly. Respect rate limits with scheduled pulls.
@@ -61,31 +64,50 @@ Buckets is a personal NBA research app: everything I want to check before placin
 
 ## Status
 
-**Phase 1 (Foundation): live on GitHub Pages, balldontlie verified, still needs an Odds API key.**
+**Phase 1 (Foundation): live on GitHub Pages, rebuilt on SportsGameOdds, awaiting the live secret to close the loop.**
 
+- **Data source change:** the account's odds API key turned out to be for
+  SportsGameOdds, not The Odds API as originally planned. Probing it live
+  (via `pg_net` from inside Supabase, bypassing this dev sandbox's blocked
+  egress) showed it returns, per event: full schedule with real tip times,
+  team *and player* box scores (enough to compute real pace/off/def
+  ratings instead of leaving them blank), and odds across 6+ books with a
+  pre-computed no-vig "fair" price per market. That's enough to replace
+  both balldontlie and The Odds API with one source — confirmed with me
+  before rebuilding `daily-sync` and the schema around it (large-change
+  rule above).
 - Supabase project: a dedicated `buckets` project was created (separate from
   any other unrelated Supabase project on this account) — see project id in
   your Supabase dashboard. Schema (`teams`, `games`, `team_game_box_scores`,
-  `odds_snapshots`, `sync_log`) is applied with RLS (read-only anon access).
-- `daily-sync` edge function is deployed with `BALLDONTLIE_API_KEY` set and
-  **verified against a real, populated response** (Feb 2026 date range: 10
-  games, 20 teams, 20 box scores upserted correctly, zero schema errors).
-  `ODDS_API_KEY` is still not set, so odds sync is skipped (logged as a
-  warning, not an error) until that key is added.
-- Scheduled via `pg_cron` + `pg_net` (`supabase/migrations/20260917080*.sql`)
-  to run daily at 08:07 UTC — no external scheduler needed.
+  `odds_snapshots`, `sync_log`) uses SportsGameOdds' own string ids
+  (`teamID`/`eventID`) as primary keys and is applied with RLS (read-only
+  anon access). `odds_snapshots.fair_price` stores the de-vigged price —
+  serves this file's core principle years ahead of Phase 3.
+- `daily-sync` edge function is rewritten for the single-source flow and
+  deployed, but needs `SPORTSGAMEODDS_API_KEY` set as a secret (same
+  manual step as before — no tool exists to set Supabase secrets remotely)
+  before it can run for real. The zod schemas and `oddID` filtering rules
+  (which markets are team-level moneyline/spread/total vs. player props)
+  were built from real captured responses, not guessed.
+- Scheduled via `pg_cron` + `pg_net` (`supabase/migrations/20260917080100_...sql`)
+  to run daily at 08:07 UTC — no external scheduler needed. (An earlier
+  migration enabling `pg_net`/`pg_cron` and the original balldontlie-shaped
+  schema were superseded by `20260917090000_switch_to_sportsgameodds_ids.sql`,
+  which drops and recreates the 4 data tables with the new id types — the
+  10 test games from the balldontlie verification were incompatible with
+  the new scheme anyway and weren't preserved.)
 - Hosting: deployed to GitHub Pages (`khil13.github.io/Buckets/`) as a free
   interim host since Netlify wasn't available (no credits) — see README's
   "Hosting" section. `netlify.toml` is kept in place for an easy switch
   later.
-- Frontend: Slate + Game Detail pages are built, tested against the schema,
-  and confirmed rendering live (empty-state correctly shown during the
-  off-season, since today's date has no games — the Feb 2026 backfill data
-  used for verification is intentionally left in the DB as real historical
-  data, not cleaned up). Advanced team metrics (off/def rating, pace) are
-  intentionally left blank rather than estimated from insufficient inputs —
-  see README's "Data honesty" section.
-- Next: get an Odds API key, verify `src/lib/schemas/oddsapi.ts` against a
-  live response the same way balldontlie was verified, confirm odds show up
-  on the Slate page once the season starts (or via a manual backfill call),
-  then move to Phase 2.
+- Frontend: Slate + Game Detail pages, hooks, and lib layer are all updated
+  for string ids and the `fair_price` field; typecheck/lint/test/build all
+  clean (19 tests). Off/def rating and pace are now computed from real box
+  score inputs (FGA/OREB/TOV/FTA) via the standard single-game possession
+  approximation, still labeled "est." since it's simplified — see README's
+  "Data honesty" section.
+- Next: set `SPORTSGAMEODDS_API_KEY` as a Supabase secret, invoke
+  `daily-sync` via `pg_net` against the real Oct 20 Pistons @ Celtics game
+  (already confirmed to have live odds) the same way balldontlie was
+  verified, confirm games/odds/box scores land correctly end to end, then
+  move to Phase 2.
