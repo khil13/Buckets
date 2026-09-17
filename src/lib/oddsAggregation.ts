@@ -5,6 +5,7 @@ export interface BestLine {
   side: string | null;
   line: number | null;
   price: number;
+  fairPrice: number | null;
   book: string;
 }
 
@@ -15,6 +16,7 @@ interface GroupKeyed {
   book: string;
   line: number | null;
   price: number;
+  fairPrice: number | null;
   capturedAt: number;
 }
 
@@ -39,6 +41,7 @@ export function computeBestLines(snapshots: OddsSnapshotRow[]): BestLine[] {
         book: s.book,
         line: s.line,
         price: s.price ?? 0,
+        fairPrice: s.fair_price,
         capturedAt,
       });
     }
@@ -62,6 +65,7 @@ export function computeBestLines(snapshots: OddsSnapshotRow[]): BestLine[] {
       side: best.side,
       line: best.line,
       price: best.price,
+      fairPrice: best.fairPrice,
       book: best.book,
     });
   }

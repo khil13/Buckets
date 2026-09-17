@@ -45,8 +45,7 @@ function Row({ label, value }: { label: string; value: string }) {
 
 export function GameDetail() {
   const { gameId } = useParams();
-  const parsedId = gameId ? Number(gameId) : undefined;
-  const { data, isLoading, isError, error } = useGameDetail(parsedId);
+  const { data, isLoading, isError, error } = useGameDetail(gameId);
 
   if (isLoading) {
     return <p className="text-sm text-bucket-muted">Loading matchup…</p>;

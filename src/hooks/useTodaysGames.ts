@@ -33,7 +33,7 @@ export function useTodaysGames() {
       if (games.length === 0) return [];
 
       const teamIds = Array.from(
-        new Set(games.flatMap((g) => [g.home_team_id, g.away_team_id]).filter((id): id is number => id != null)),
+        new Set(games.flatMap((g) => [g.home_team_id, g.away_team_id]).filter((id): id is string => id != null)),
       );
       const gameIds = games.map((g) => g.id);
 
@@ -48,7 +48,7 @@ export function useTodaysGames() {
       const odds = z.array(oddsSnapshotRowSchema).parse(oddsResult.data ?? []);
 
       const teamsById = new Map(teams.map((t) => [t.id, t]));
-      const oddsByGame = new Map<number, typeof odds>();
+      const oddsByGame = new Map<string, typeof odds>();
       for (const snapshot of odds) {
         const arr = oddsByGame.get(snapshot.game_id) ?? [];
         arr.push(snapshot);

@@ -49,22 +49,27 @@ committed.
 ## Backend (Supabase)
 
 Schema lives in `supabase/migrations/`. Tables: `teams`, `games`,
-`team_game_box_scores`, `odds_snapshots`, `sync_log`. All tables are
-read-only to the anon/publishable key (RLS); writes only happen through the
-`daily-sync` edge function's service-role key.
+`team_game_box_scores`, `odds_snapshots`, `sync_log`. `teams.id`/`games.id`
+are SportsGameOdds' own string ids (`teamID`/`eventID`), used directly as
+primary keys. All tables are read-only to the anon/publishable key (RLS);
+writes only happen through the `daily-sync` edge function's service-role
+key.
 
 ### `daily-sync` edge function
 
-`supabase/functions/daily-sync/index.ts` pulls the next ~week of games from
-balldontlie and odds (spreads/totals/moneyline) from The Odds API, upserts
-them, and logs every run to `sync_log` — including a clean "not configured"
-log entry if API keys are missing, rather than crashing.
+`supabase/functions/daily-sync/index.ts` pulls the next ~week of games,
+box scores, and odds from a single source — [SportsGameOdds](https://sportsgameodds.com)
+— upserts them, and logs every run to `sync_log`, including a clean "not
+configured" log entry if the API key is missing rather than crashing.
+(balldontlie + The Odds API were the original plan, but SportsGameOdds
+turned out to offer schedule, box scores, *and* odds — with a pre-computed
+no-vig "fair" price per market — in one call, so it replaced both. See
+`CLAUDE.md`'s Status section for how that decision was made.)
 
-Required secrets (set with `supabase secrets set KEY=value`, or in the
-Supabase dashboard — **never** commit these):
+Required secret (set with `supabase secrets set KEY=value`, or in the
+Supabase dashboard — **never** commit this):
 
-- `BALLDONTLIE_API_KEY`
-- `ODDS_API_KEY`
+- `SPORTSGAMEODDS_API_KEY`
 
 (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are auto-injected by
 Supabase for every edge function — nothing to set.)
@@ -79,7 +84,7 @@ You can also invoke it manually with an optional `start_date`/`end_date`
 override — useful for backfilling or re-verifying against a specific range:
 
 ```bash
-curl "https://smtpfhinrmjpxxthqnie.functions.supabase.co/daily-sync?start_date=2026-02-03&end_date=2026-02-03"
+curl "https://smtpfhinrmjpxxthqnie.functions.supabase.co/daily-sync?start_date=2026-10-20&end_date=2026-10-20"
 ```
 
 The function has `verify_jwt` disabled since it's an internal scheduled job
@@ -87,18 +92,18 @@ with no user-facing auth — it's safe because every write is an idempotent
 upsert, but don't put anything sensitive behind it later without adding a
 shared-secret check.
 
-**Verified against live data:** the `balldontlie` integration has been
-confirmed against a real, populated response (a February 2026 date range) —
-the zod schema in `src/lib/schemas/balldontlie.ts` and its edge-function
-duplicate parse real games correctly (see `CLAUDE.md`'s Status section).
-`ODDS_API_KEY` is still unset, so `oddsapi.ts`'s schemas remain unverified
-against a live response until that key is added.
+**Verified against live data:** the SportsGameOdds integration (schedule,
+box scores, and odds) was confirmed against real responses captured live
+during development — see `CLAUDE.md`'s Status section for specifics and
+what's still pending an end-to-end run with the edge function's own secret
+set.
 
 ## Data honesty
 
-Advanced team metrics (offensive/defensive rating, pace) are **not**
-computed in Phase 1 — balldontlie's schedule endpoint only gives final
-scores, and fabricating a "rating" from insufficient inputs would violate
-this app's honesty-over-hype principle. The game detail page shows real
-per-game point averages and leaves pace/ratings blank until a real data
-source for them is wired up (Phase 2/3).
+Offensive/defensive rating and pace are computed from real per-game box
+score inputs (`FGA`, `OREB`, `TOV`, `FTA`) using the standard single-game
+possession approximation, and labeled "est." in the UI — they're a
+simplified per-game number, not a true seasonal advanced stat. Line/odds
+values shown are the best available price found across the books
+SportsGameOdds' current API tier returns (its own response notes that a
+higher tier would include more bookmakers).

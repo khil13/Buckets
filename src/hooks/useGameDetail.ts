@@ -15,7 +15,7 @@ export interface GameDetailData {
   away: TeamContext;
 }
 
-export function useGameDetail(gameId: number | undefined) {
+export function useGameDetail(gameId: string | undefined) {
   return useQuery({
     queryKey: ["game-detail", gameId],
     enabled: gameId != null,
