@@ -26,3 +26,20 @@ export function formatGameDate(isoDate: string): string {
 export function formatPercent(fraction: number, digits = 0): string {
   return `${(fraction * 100).toFixed(digits)}%`;
 }
+
+const PROP_STAT_LABELS: Record<string, string> = {
+  points: "Points",
+  rebounds: "Rebounds",
+  assists: "Assists",
+  three_pointers_made: "3PT Made",
+  points_assists: "Pts+Ast",
+  points_rebounds: "Pts+Reb",
+  rebounds_assists: "Reb+Ast",
+  points_rebounds_assists: "Pts+Reb+Ast",
+  double_double: "Double-Double",
+  triple_double: "Triple-Double",
+};
+
+export function formatPropStat(stat: string): string {
+  return PROP_STAT_LABELS[stat] ?? stat;
+}
