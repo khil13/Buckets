@@ -1,9 +1,11 @@
 # Buckets
 
 NBA betting research app — matchup context, props, and model edge in one
-place. See `CLAUDE.md` for the full product spec and phased roadmap. This is
-**Phase 1: Foundation** — today's slate, a game detail page, and the daily
-data sync job. No props, model, or bet tracking yet.
+place. See `CLAUDE.md` for the full product spec and phased roadmap.
+**Phase 1 (Foundation)** and the core of **Phase 2 (Player props)** are
+built: today's slate, a game detail page, a player page, a prop board, and
+the daily data sync job. No model or bet tracking yet, and "teammate out"
+splits are deferred (see `CLAUDE.md`'s Status).
 
 ## Stack
 
@@ -49,22 +51,26 @@ committed.
 ## Backend (Supabase)
 
 Schema lives in `supabase/migrations/`. Tables: `teams`, `games`,
-`team_game_box_scores`, `odds_snapshots`, `sync_log`. `teams.id`/`games.id`
-are SportsGameOdds' own string ids (`teamID`/`eventID`), used directly as
-primary keys. All tables are read-only to the anon/publishable key (RLS);
-writes only happen through the `daily-sync` edge function's service-role
-key.
+`team_game_box_scores`, `odds_snapshots`, `players`, `player_game_stats`,
+`player_prop_snapshots`, `sync_log`. `teams.id`/`games.id`/`players.id` are
+SportsGameOdds' own string ids (`teamID`/`eventID`/`playerID`), used
+directly as primary keys. All tables are read-only to the anon/publishable
+key (RLS); writes only happen through the `daily-sync` edge function's
+service-role key.
 
 ### `daily-sync` edge function
 
 `supabase/functions/daily-sync/index.ts` pulls the next ~week of games,
-box scores, and odds from a single source — [SportsGameOdds](https://sportsgameodds.com)
-— upserts them, and logs every run to `sync_log`, including a clean "not
-configured" log entry if the API key is missing rather than crashing.
-(balldontlie + The Odds API were the original plan, but SportsGameOdds
-turned out to offer schedule, box scores, *and* odds — with a pre-computed
-no-vig "fair" price per market — in one call, so it replaced both. See
-`CLAUDE.md`'s Status section for how that decision was made.)
+team + player box scores, and team + player-prop odds from a single
+source — [SportsGameOdds](https://sportsgameodds.com) — upserts them, and
+logs every run to `sync_log`, including a clean "not configured" log entry
+if the API key is missing rather than crashing. (balldontlie + The Odds
+API were the original plan, but SportsGameOdds turned out to offer
+schedule, box scores, *and* odds — with a pre-computed no-vig "fair" price
+per market — in one call, so it replaced both. See `CLAUDE.md`'s Status
+section for how that decision was made.) Player data (roster, box stats,
+prop odds) comes from the *same* API response as team data — no extra
+fetch, just more of it parsed.
 
 Required secret (set with `supabase secrets set KEY=value`, or in the
 Supabase dashboard — **never** commit this):
@@ -93,17 +99,32 @@ upsert, but don't put anything sensitive behind it later without adding a
 shared-secret check.
 
 **Verified against live data:** the SportsGameOdds integration (schedule,
-box scores, and odds) was confirmed against real responses captured live
-during development — see `CLAUDE.md`'s Status section for specifics and
-what's still pending an end-to-end run with the edge function's own secret
-set.
+team + player odds, roster) was confirmed against real responses and real
+`daily-sync` invocations during development — see `CLAUDE.md`'s Status
+section for specifics and what's still pending (box scores/player game
+stats need a completed game to fully verify, since the season hasn't
+started yet).
+
+## Frontend pages
+
+- `/` — today's slate
+- `/game/:gameId` — game detail (records, form, splits, rest, pace/ratings)
+- `/props` — prop board, sortable by hit rate or by average-vs-line gap
+- `/player/:playerId` — player detail (averages, hit rate, minutes/usage
+  trend, home/away and vs-opponent splits); reached from a prop board row,
+  which passes `?stat=&line=&opponent=` in the URL
 
 ## Data honesty
 
 Offensive/defensive rating and pace are computed from real per-game box
 score inputs (`FGA`, `OREB`, `TOV`, `FTA`) using the standard single-game
 possession approximation, and labeled "est." in the UI — they're a
-simplified per-game number, not a true seasonal advanced stat. Line/odds
-values shown are the best available price found across the books
-SportsGameOdds' current API tier returns (its own response notes that a
-higher tier would include more bookmakers).
+simplified per-game number, not a true seasonal advanced stat. A player's
+"usage trend" is a raw shot/possession-involvement count
+(`FGA + 0.44×FTA + TOV`), not a normalized usage-rate percentage, which
+would need on/off-court data this app doesn't have. The prop board's "gap"
+(season average minus the line) is a simple directional signal, not a
+model edge — that's Phase 3, once a real model exists. Line/odds values
+shown are the best available price found across the books SportsGameOdds'
+current API tier returns (its own response notes that a higher tier would
+include more bookmakers).

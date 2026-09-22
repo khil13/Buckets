@@ -54,10 +54,20 @@ const oddEntrySchema = z.object({
   byBookmaker: z.record(bookmakerOddSchema).optional(),
 });
 
+// Real roster entry, confirmed via pg_net probe: event.players is keyed by
+// playerID and gives a clean display name + team, unlike results.game's
+// player entries (siblings of home/away, no name/team of their own).
+const playerRosterEntrySchema = z.object({
+  playerID: z.string(),
+  name: z.string(),
+  teamID: z.string(),
+});
+
 const eventSchema = z.object({
   eventID: z.string(),
   teams: z.object({ home: teamSideSchema, away: teamSideSchema }),
   status: statusSchema,
+  players: z.record(playerRosterEntrySchema).optional(),
   // Upcoming games return results: {} (no `game` key yet) rather than
   // omitting `results` or nulling it -- confirmed live, not guessed.
   results: z.object({ game: z.record(z.unknown()).optional() }).nullable().optional(),
@@ -80,12 +90,46 @@ const boxTeamStatsSchema = z.object({
   freeThrowsAttempted: z.number(),
 });
 
+// Per-player box stats -- results.game.{PLAYER_ID}, siblings of home/away.
+// Only the fields Phase 2's prop markets need; extra real fields (fouls,
+// plusMinus, etc.) are ignored, not stripped by a stricter schema.
+const boxPlayerStatsSchema = z.object({
+  points: z.number(),
+  rebounds: z.number(),
+  assists: z.number(),
+  steals: z.number(),
+  blocks: z.number(),
+  turnovers: z.number(),
+  threePointersMade: z.number(),
+  fieldGoalsMade: z.number(),
+  fieldGoalsAttempted: z.number(),
+  freeThrowsAttempted: z.number(),
+  secondsPlayed: z.number(),
+});
+
 const TEAM_MARKET_BET_TYPES = new Set(["ml", "sp", "ou"]);
 const TEAM_MARKET_ENTITIES = new Set(["home", "away", "all"]);
 const betTypeToMarket: Record<string, "moneyline" | "spread" | "total"> = {
   ml: "moneyline",
   sp: "spread",
   ou: "total",
+};
+
+// Player-prop statID -> our player_prop_snapshots.stat enum. periodID must
+// be "game" and betTypeID "ou" (line-based) or "yn" (double/triple-double,
+// no line) -- confirmed real oddID shapes, not guessed.
+const PLAYER_PROP_BET_TYPES = new Set(["ou", "yn"]);
+const playerPropStatIdToStat: Record<string, string> = {
+  points: "points",
+  rebounds: "rebounds",
+  assists: "assists",
+  threePointersMade: "three_pointers_made",
+  "points+assists": "points_assists",
+  "points+rebounds": "points_rebounds",
+  "rebounds+assists": "rebounds_assists",
+  "points+rebounds+assists": "points_rebounds_assists",
+  doubleDouble: "double_double",
+  tripleDouble: "triple_double",
 };
 
 function isoDate(d: Date): string {
@@ -109,6 +153,9 @@ interface SyncSummary {
   teamsUpserted: number;
   boxScoresUpserted: number;
   oddsSnapshotsInserted: number;
+  playersUpserted: number;
+  playerStatsUpserted: number;
+  playerPropsInserted: number;
   warnings: string[];
 }
 
@@ -127,6 +174,9 @@ Deno.serve(async (req) => {
     teamsUpserted: 0,
     boxScoresUpserted: 0,
     oddsSnapshotsInserted: 0,
+    playersUpserted: 0,
+    playerStatsUpserted: 0,
+    playerPropsInserted: 0,
     warnings: [],
   };
 
@@ -182,6 +232,25 @@ Deno.serve(async (req) => {
       );
       if (error) throw new Error(`teams upsert failed: ${error.message}`);
       summary.teamsUpserted = teamsById.size;
+    }
+
+    // Upsert players (deduped from each event's roster).
+    const playersById = new Map<string, z.infer<typeof playerRosterEntrySchema>>();
+    for (const event of events) {
+      for (const player of Object.values(event.players ?? {})) {
+        playersById.set(player.playerID, player);
+      }
+    }
+    if (playersById.size > 0) {
+      const { error } = await supabase.from("players").upsert(
+        Array.from(playersById.values()).map((p) => ({
+          id: p.playerID,
+          name: p.name,
+          team_id: p.teamID,
+        })),
+      );
+      if (error) throw new Error(`players upsert failed: ${error.message}`);
+      summary.playersUpserted = playersById.size;
     }
 
     // Upsert games.
@@ -255,10 +324,59 @@ Deno.serve(async (req) => {
       summary.boxScoresUpserted = boxScoreRows.length;
     }
 
-    // Odds: team-level moneyline/spread/total only (statID=points,
-    // periodID=game, betTypeID in ml/sp/ou, statEntityID in home/away/all).
-    // Player props use different statEntityID/statID values and are out of
-    // scope until Phase 2.
+    // Per-player box stats: any results.game key that isn't home/away.
+    const playerStatRows: Array<{
+      game_id: string;
+      player_id: string;
+      team_id: string | null;
+      minutes: number;
+      points: number;
+      rebounds: number;
+      assists: number;
+      steals: number;
+      blocks: number;
+      turnovers: number;
+      three_pointers_made: number;
+      field_goals_made: number;
+      field_goals_attempted: number;
+      free_throws_attempted: number;
+    }> = [];
+    for (const event of events) {
+      const gameResults = event.results?.game;
+      if (!gameResults) continue;
+      for (const [key, value] of Object.entries(gameResults)) {
+        if (key === "home" || key === "away") continue;
+        const parsed = boxPlayerStatsSchema.safeParse(value);
+        if (!parsed.success) continue;
+        playerStatRows.push({
+          game_id: event.eventID,
+          player_id: key,
+          team_id: event.players?.[key]?.teamID ?? null,
+          minutes: parsed.data.secondsPlayed / 60,
+          points: parsed.data.points,
+          rebounds: parsed.data.rebounds,
+          assists: parsed.data.assists,
+          steals: parsed.data.steals,
+          blocks: parsed.data.blocks,
+          turnovers: parsed.data.turnovers,
+          three_pointers_made: parsed.data.threePointersMade,
+          field_goals_made: parsed.data.fieldGoalsMade,
+          field_goals_attempted: parsed.data.fieldGoalsAttempted,
+          free_throws_attempted: parsed.data.freeThrowsAttempted,
+        });
+      }
+    }
+    if (playerStatRows.length > 0) {
+      const { error } = await supabase
+        .from("player_game_stats")
+        .upsert(playerStatRows, { onConflict: "game_id,player_id" });
+      if (error) throw new Error(`player stats upsert failed: ${error.message}`);
+      summary.playerStatsUpserted = playerStatRows.length;
+    }
+
+    // Odds: team-level moneyline/spread/total (statID=points, periodID=game,
+    // betTypeID in ml/sp/ou, statEntityID in home/away/all). Player props
+    // (statEntityID is a player id instead) are handled in the next loop.
     const snapshotRows: Array<{
       game_id: string;
       book: string;
@@ -303,6 +421,59 @@ Deno.serve(async (req) => {
         }
       }
     }
+    // Player props: statEntityID is a player id (not home/away/all).
+    // periodID=game, betTypeID "ou" (line-based) or "yn" (double/triple-
+    // double, no line), statID in our supported set.
+    const playerPropRows: Array<{
+      game_id: string;
+      player_id: string;
+      stat: string;
+      book: string;
+      side: string;
+      line: number | null;
+      price: number;
+      fair_price: number | null;
+    }> = [];
+    for (const event of events) {
+      for (const entry of Object.values(event.odds ?? {})) {
+        const stat = playerPropStatIdToStat[entry.statID];
+        if (
+          !stat ||
+          entry.periodID !== "game" ||
+          !PLAYER_PROP_BET_TYPES.has(entry.betTypeID) ||
+          TEAM_MARKET_ENTITIES.has(entry.statEntityID)
+        ) {
+          continue;
+        }
+        const fairPrice = entry.fairOdds ? parseInt(entry.fairOdds, 10) : null;
+
+        for (const [book, bm] of Object.entries(entry.byBookmaker ?? {})) {
+          if (bm.available === false || !bm.odds) continue;
+          const price = parseInt(bm.odds, 10);
+          if (Number.isNaN(price)) continue;
+
+          let line: number | null = null;
+          if (entry.betTypeID === "ou" && bm.overUnder) line = parseFloat(bm.overUnder);
+
+          playerPropRows.push({
+            game_id: event.eventID,
+            player_id: entry.statEntityID,
+            stat,
+            book,
+            side: entry.sideID,
+            line: line != null && Number.isNaN(line) ? null : line,
+            price,
+            fair_price: fairPrice != null && Number.isNaN(fairPrice) ? null : fairPrice,
+          });
+        }
+      }
+    }
+    if (playerPropRows.length > 0) {
+      const { error } = await supabase.from("player_prop_snapshots").insert(playerPropRows);
+      if (error) throw new Error(`player_prop_snapshots insert failed: ${error.message}`);
+      summary.playerPropsInserted = playerPropRows.length;
+    }
+
     if (snapshotRows.length > 0) {
       const { error } = await supabase.from("odds_snapshots").insert(snapshotRows);
       if (error) throw new Error(`odds_snapshots insert failed: ${error.message}`);
