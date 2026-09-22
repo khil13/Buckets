@@ -64,58 +64,47 @@ Buckets is a personal NBA research app: everything I want to check before placin
 
 ## Status
 
-**Phase 1 (Foundation): live on GitHub Pages, SportsGameOdds integration verified end to end.**
+**Phase 1 (Foundation): done, live on GitHub Pages.** **Phase 2 (Player props): core built, verified end to end.**
 
-- **Data source change:** the account's odds API key turned out to be for
-  SportsGameOdds, not The Odds API as originally planned. Probing it live
-  (via `pg_net` from inside Supabase, bypassing this dev sandbox's blocked
-  egress) showed it returns, per event: full schedule with real tip times,
-  team *and player* box scores (enough to compute real pace/off/def
-  ratings instead of leaving them blank), and odds across 6+ books with a
-  pre-computed no-vig "fair" price per market. That's enough to replace
-  both balldontlie and The Odds API with one source — confirmed with me
-  before rebuilding `daily-sync` and the schema around it (large-change
-  rule above).
-- Supabase project: a dedicated `buckets` project was created (separate from
-  any other unrelated Supabase project on this account) — see project id in
-  your Supabase dashboard. Schema (`teams`, `games`, `team_game_box_scores`,
-  `odds_snapshots`, `sync_log`) uses SportsGameOdds' own string ids
-  (`teamID`/`eventID`) as primary keys and is applied with RLS (read-only
-  anon access). `odds_snapshots.fair_price` stores the de-vigged price —
-  serves this file's core principle years ahead of Phase 3.
-- `daily-sync` edge function is rewritten for the single-source flow,
-  deployed, and **verified end to end** with `SPORTSGAMEODDS_API_KEY` set
-  as a live secret: a real invocation against 2026-10-19..21 upserted 2
-  games, 4 teams, and 92 odds snapshots (8 books, correct home/away
-  mapping, consistent no-vig `fair_price` per side) with zero errors. One
-  real bug was caught and fixed along the way — upcoming (not-yet-played)
-  events return `results: {}` with no `game` key, not `results: null` or
-  an omitted field, which the initial schema didn't allow; `results.game`
-  is now optional. The zod schemas and `oddID` filtering rules (which
-  markets are team-level moneyline/spread/total vs. player props) were
-  built from real captured responses throughout, not guessed.
-- Scheduled via `pg_cron` + `pg_net` (`supabase/migrations/20260917080100_...sql`)
-  to run daily at 08:07 UTC — no external scheduler needed. (An earlier
-  migration enabling `pg_net`/`pg_cron` and the original balldontlie-shaped
-  schema were superseded by `20260917090000_switch_to_sportsgameodds_ids.sql`,
-  which drops and recreates the 4 data tables with the new id types — the
-  10 test games from the balldontlie verification were incompatible with
-  the new scheme anyway and weren't preserved.)
-- Hosting: deployed to GitHub Pages (`khil13.github.io/Buckets/`) as a free
-  interim host since Netlify wasn't available (no credits) — see README's
-  "Hosting" section. `netlify.toml` is kept in place for an easy switch
-  later.
-- Frontend: Slate + Game Detail pages, hooks, and lib layer are all updated
-  for string ids and the `fair_price` field; typecheck/lint/test/build all
-  clean (19 tests). Off/def rating and pace are now computed from real box
-  score inputs (FGA/OREB/TOV/FTA) via the standard single-game possession
-  approximation, still labeled "est." since it's simplified — see README's
-  "Data honesty" section.
-- Not yet exercised: the box-score/pace/rating computation path (no games
-  in the verified window have finished yet — `boxScoresUpserted: 0` — so
-  that part is schema-verified against real captured data but not yet
-  proven through a live completed game). Worth a spot check once games
-  finish after the season starts.
-- Next: move to Phase 2 (player props). The daily 08:07 UTC cron will
-  keep the Slate/Game Detail pages populated automatically once the
-  season starts in October.
+### Phase 1
+- Single data source: [SportsGameOdds](https://sportsgameodds.com), not balldontlie + The Odds API as originally
+  planned — the account's key turned out to be for SportsGameOdds, and probing it live (via `pg_net` from inside
+  Supabase, bypassing this dev sandbox's blocked egress) showed one call returns schedule, team *and player* box
+  scores, and odds with a pre-computed no-vig "fair" price per market. Confirmed with me before rebuilding around
+  it (large-change rule above).
+- Supabase project `buckets` (dedicated, separate from any other project on this account). Schema uses
+  SportsGameOdds' own string ids (`teamID`/`eventID`/`playerID`) as primary keys throughout, RLS read-only for
+  anon. `odds_snapshots.fair_price` / `player_prop_snapshots.fair_price` store the de-vigged price — serves this
+  file's core principle years ahead of Phase 3.
+- `daily-sync` edge function verified end to end with `SPORTSGAMEODDS_API_KEY` live: real games, teams, and odds
+  snapshots land correctly (8 books, correct home/away mapping, consistent `fair_price`). Scheduled via
+  `pg_cron`+`pg_net` daily at 08:07 UTC, no external scheduler needed.
+- Hosting: GitHub Pages (`khil13.github.io/Buckets/`) as a free interim host since Netlify wasn't available (no
+  credits) — see README's "Hosting" section. `netlify.toml` kept in place for an easy switch later.
+- **Not yet exercised**: the team box-score/pace/rating computation path (`boxScoresUpserted: 0` in every
+  verification so far — no games in the tested windows have finished). Schema-verified against real captured
+  data, not yet proven through a live completed game. Worth a spot check once games finish after the season
+  starts in October.
+
+### Phase 2
+- `daily-sync` extended (no new API call — parses more of the same `/v2/events` response): `players` upserted
+  from the real `event.players` roster field (confirmed via `pg_net` probe to give a clean `{name, teamID}` per
+  player, avoiding any ID-parsing guesswork), `player_game_stats` from `results.game`'s per-player entries, and
+  `player_prop_snapshots` from `odds` entries whose `statEntityID` is a player id instead of `home`/`away`/`all`.
+  Verified end to end: a real invocation upserted 4 players and 75 player-prop snapshots correctly (real names,
+  correct team mapping, right over/under and yes/no sides, real prices and fair prices for points/rebounds/
+  assists/3PM/combo markets across multiple books).
+- `src/lib/playerContext.ts` (unit tested, 6 tests): season/last-5/last-10 averages, hit rate vs. a line,
+  minutes trend, a shot/possession-involvement "usage" trend (FGA + 0.44×FTA + TOV — explicitly *not* a
+  normalized usage-rate %, which needs on/off-court data this app doesn't have), home/away split, vs-opponent
+  average.
+- New pages: `/props` (Prop Board, sortable by hit rate or by "average − line" gap — explicitly not "edge" in
+  the Phase 3 model-vs-no-vig sense) and `/player/:playerId` (Player Detail, reached via a prop row's link with
+  `?stat=&line=&opponent=` query params).
+- **Deferred**: "teammate out" splits. The box results don't score which team a player's on by themselves (the
+  roster field solves player→team, but "who's out" and "which teammate to compare against" are separate design
+  questions), and both are easier to verify once real games with real absences exist. Decided with me before
+  starting Phase 2 (sequencing choice, not a scope cut).
+- **Not yet exercised**: `player_game_stats` real data (same "no completed games yet" gap as team box scores).
+- Next: once the season starts and games finish, spot-check box scores/pace/ratings and player game stats
+  against real completed games, then pick up "teammate out" splits before moving to Phase 3.
