@@ -50,7 +50,9 @@ export const sgoEventSchema = z.object({
   eventID: z.string(),
   teams: z.object({ home: sgoTeamSideSchema, away: sgoTeamSideSchema }),
   status: sgoStatusSchema,
-  results: z.object({ game: z.record(z.unknown()) }).nullable().optional(),
+  // Upcoming games return results: {} (no `game` key yet) rather than
+  // omitting `results` or nulling it -- confirmed live, not guessed.
+  results: z.object({ game: z.record(z.unknown()).optional() }).nullable().optional(),
   odds: z.record(sgoOddEntrySchema).optional(),
 });
 export type SgoEvent = z.infer<typeof sgoEventSchema>;

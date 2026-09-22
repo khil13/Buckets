@@ -64,7 +64,7 @@ Buckets is a personal NBA research app: everything I want to check before placin
 
 ## Status
 
-**Phase 1 (Foundation): live on GitHub Pages, rebuilt on SportsGameOdds, awaiting the live secret to close the loop.**
+**Phase 1 (Foundation): live on GitHub Pages, SportsGameOdds integration verified end to end.**
 
 - **Data source change:** the account's odds API key turned out to be for
   SportsGameOdds, not The Odds API as originally planned. Probing it live
@@ -83,12 +83,17 @@ Buckets is a personal NBA research app: everything I want to check before placin
   (`teamID`/`eventID`) as primary keys and is applied with RLS (read-only
   anon access). `odds_snapshots.fair_price` stores the de-vigged price —
   serves this file's core principle years ahead of Phase 3.
-- `daily-sync` edge function is rewritten for the single-source flow and
-  deployed, but needs `SPORTSGAMEODDS_API_KEY` set as a secret (same
-  manual step as before — no tool exists to set Supabase secrets remotely)
-  before it can run for real. The zod schemas and `oddID` filtering rules
-  (which markets are team-level moneyline/spread/total vs. player props)
-  were built from real captured responses, not guessed.
+- `daily-sync` edge function is rewritten for the single-source flow,
+  deployed, and **verified end to end** with `SPORTSGAMEODDS_API_KEY` set
+  as a live secret: a real invocation against 2026-10-19..21 upserted 2
+  games, 4 teams, and 92 odds snapshots (8 books, correct home/away
+  mapping, consistent no-vig `fair_price` per side) with zero errors. One
+  real bug was caught and fixed along the way — upcoming (not-yet-played)
+  events return `results: {}` with no `game` key, not `results: null` or
+  an omitted field, which the initial schema didn't allow; `results.game`
+  is now optional. The zod schemas and `oddID` filtering rules (which
+  markets are team-level moneyline/spread/total vs. player props) were
+  built from real captured responses throughout, not guessed.
 - Scheduled via `pg_cron` + `pg_net` (`supabase/migrations/20260917080100_...sql`)
   to run daily at 08:07 UTC — no external scheduler needed. (An earlier
   migration enabling `pg_net`/`pg_cron` and the original balldontlie-shaped
@@ -106,8 +111,11 @@ Buckets is a personal NBA research app: everything I want to check before placin
   score inputs (FGA/OREB/TOV/FTA) via the standard single-game possession
   approximation, still labeled "est." since it's simplified — see README's
   "Data honesty" section.
-- Next: set `SPORTSGAMEODDS_API_KEY` as a Supabase secret, invoke
-  `daily-sync` via `pg_net` against the real Oct 20 Pistons @ Celtics game
-  (already confirmed to have live odds) the same way balldontlie was
-  verified, confirm games/odds/box scores land correctly end to end, then
-  move to Phase 2.
+- Not yet exercised: the box-score/pace/rating computation path (no games
+  in the verified window have finished yet — `boxScoresUpserted: 0` — so
+  that part is schema-verified against real captured data but not yet
+  proven through a live completed game). Worth a spot check once games
+  finish after the season starts.
+- Next: move to Phase 2 (player props). The daily 08:07 UTC cron will
+  keep the Slate/Game Detail pages populated automatically once the
+  season starts in October.
