@@ -1,85 +1,107 @@
 // Deno edge function. Scheduled via pg_cron (see README) to run once daily.
 //
-// Pulls the next few days of NBA games + odds and upserts them into
-// Supabase. Every path is defensive: a missing API key or a malformed
-// upstream response is logged to `sync_log` and returned as a 200 with an
-// error detail, never an uncaught crash — a cron run should always leave a
+// Pulls the next few days of NBA games + odds from SportsGameOdds (a single
+// API for schedule, box scores, and odds — replaced balldontlie + The Odds
+// API once we found it offered enough for real pace/off/def rating
+// calculations plus a pre-computed no-vig "fair" price per market).
+// Every path is defensive: a missing API key or a malformed upstream
+// response is logged to `sync_log` and returned as a 200 with an error
+// detail, never an uncaught crash — a cron run should always leave a
 // record of what happened.
 //
-// Zod schemas here mirror src/lib/schemas/{balldontlie,oddsapi}.ts but are
-// kept separate since this runs on Deno (npm: specifiers) rather than the
-// Vite/browser bundle. They were written from public API docs, not a live
-// response (this dev sandbox's network egress blocks both vendors' docs
-// sites) — verify field names against real responses once API keys are
-// added, and adjust only this file plus its frontend counterparts.
+// The zod schemas and oddID filtering rules here were built from real
+// captured responses (probed live via pg_net from within this project,
+// bypassing the dev sandbox's blocked egress to sportsgameodds.io) rather
+// than guessed from docs — mirrored in src/lib/schemas/sportsgameodds.ts
+// for the frontend.
 
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { z } from "npm:zod@3.23.8";
 
-const bdlTeamSchema = z.object({
-  id: z.number(),
-  abbreviation: z.string(),
-  conference: z.string(),
-  division: z.string(),
-  full_name: z.string(),
-  name: z.string(),
+const teamNamesSchema = z.object({
+  short: z.string(),
+  medium: z.string(),
+  long: z.string(),
 });
 
-const bdlGameSchema = z.object({
-  id: z.number(),
-  date: z.string(),
-  season: z.number(),
-  status: z.string(),
-  home_team_score: z.number(),
-  visitor_team_score: z.number(),
-  home_team: bdlTeamSchema,
-  visitor_team: bdlTeamSchema,
+const teamSideSchema = z.object({
+  teamID: z.string(),
+  names: teamNamesSchema,
+  score: z.number().nullable().optional(),
 });
 
-const bdlGamesResponseSchema = z.object({
-  data: z.array(bdlGameSchema),
+const statusSchema = z.object({
+  completed: z.boolean(),
+  live: z.boolean(),
+  startsAt: z.string(),
 });
 
-const oddsOutcomeSchema = z.object({
-  name: z.string(),
-  price: z.number(),
-  point: z.number().optional(),
+const bookmakerOddSchema = z.object({
+  odds: z.string().optional(),
+  spread: z.string().optional(),
+  overUnder: z.string().optional(),
+  available: z.boolean().optional(),
 });
 
-const oddsMarketKeySchema = z.enum(["h2h", "spreads", "totals"]);
-
-const oddsEventSchema = z.object({
-  id: z.string(),
-  commence_time: z.string(),
-  home_team: z.string(),
-  away_team: z.string(),
-  bookmakers: z.array(
-    z.object({
-      key: z.string(),
-      markets: z.array(
-        z.object({
-          key: oddsMarketKeySchema,
-          outcomes: z.array(oddsOutcomeSchema),
-        }),
-      ),
-    }),
-  ),
+const oddEntrySchema = z.object({
+  oddID: z.string(),
+  statID: z.string(),
+  statEntityID: z.string(),
+  periodID: z.string(),
+  betTypeID: z.string(),
+  sideID: z.string(),
+  fairOdds: z.string().optional(),
+  byBookmaker: z.record(bookmakerOddSchema).optional(),
 });
 
-const oddsEventsResponseSchema = z.array(oddsEventSchema);
+const eventSchema = z.object({
+  eventID: z.string(),
+  teams: z.object({ home: teamSideSchema, away: teamSideSchema }),
+  status: statusSchema,
+  // Upcoming games return results: {} (no `game` key yet) rather than
+  // omitting `results` or nulling it -- confirmed live, not guessed.
+  results: z.object({ game: z.record(z.unknown()).optional() }).nullable().optional(),
+  odds: z.record(oddEntrySchema).optional(),
+});
 
-const marketKeyToDbMarket: Record<z.infer<typeof oddsMarketKeySchema>, "moneyline" | "spread" | "total"> = {
-  h2h: "moneyline",
-  spreads: "spread",
-  totals: "total",
+const eventsResponseSchema = z.object({
+  success: z.boolean(),
+  data: z.array(eventSchema),
+  nextCursor: z.string().nullable().optional(),
+});
+
+// Only real numbers we trust for pace/rating math — pulled from a
+// completed event's results.game.{home,away}.
+const boxTeamStatsSchema = z.object({
+  points: z.number(),
+  fieldGoalsAttempted: z.number(),
+  offensiveRebounds: z.number(),
+  turnovers: z.number(),
+  freeThrowsAttempted: z.number(),
+});
+
+const TEAM_MARKET_BET_TYPES = new Set(["ml", "sp", "ou"]);
+const TEAM_MARKET_ENTITIES = new Set(["home", "away", "all"]);
+const betTypeToMarket: Record<string, "moneyline" | "spread" | "total"> = {
+  ml: "moneyline",
+  sp: "spread",
+  ou: "total",
 };
-
-function isFinal(status: string): boolean {
-  return status.trim().toLowerCase() === "final";
-}
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
+}
+
+/** NBA season convention: Oct–Dec belongs to the season named after that year. */
+function computeSeason(isoDateTime: string): number {
+  const d = new Date(isoDateTime);
+  const month = d.getUTCMonth() + 1;
+  const year = d.getUTCFullYear();
+  return month >= 10 ? year : year - 1;
+}
+
+function possessionsEst(b: z.infer<typeof boxTeamStatsSchema>): number {
+  return b.fieldGoalsAttempted - b.offensiveRebounds + b.turnovers + 0.4 * b.freeThrowsAttempted;
 }
 
 interface SyncSummary {
@@ -87,20 +109,15 @@ interface SyncSummary {
   teamsUpserted: number;
   boxScoresUpserted: number;
   oddsSnapshotsInserted: number;
-  oddsEventsMatched: number;
-  oddsEventsUnmatched: number;
   warnings: string[];
 }
 
 Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const balldontlieKey = Deno.env.get("BALLDONTLIE_API_KEY");
-  const oddsApiKey = Deno.env.get("ODDS_API_KEY");
+  const apiKey = Deno.env.get("SPORTSGAMEODDS_API_KEY");
 
   if (!supabaseUrl || !serviceRoleKey) {
-    // These are auto-injected by Supabase for every edge function; if
-    // they're missing something is very wrong with the deployment itself.
     return new Response(JSON.stringify({ error: "Missing Supabase runtime env vars" }), { status: 500 });
   }
 
@@ -110,57 +127,57 @@ Deno.serve(async (req) => {
     teamsUpserted: 0,
     boxScoresUpserted: 0,
     oddsSnapshotsInserted: 0,
-    oddsEventsMatched: 0,
-    oddsEventsUnmatched: 0,
     warnings: [],
   };
 
   try {
-    if (!balldontlieKey) {
-      await logSync(supabase, "error", { message: "BALLDONTLIE_API_KEY is not set", summary });
-      return Response.json({ ok: false, error: "BALLDONTLIE_API_KEY is not set" });
+    if (!apiKey) {
+      await logSync(supabase, "error", { message: "SPORTSGAMEODDS_API_KEY is not set", summary });
+      return Response.json({ ok: false, error: "SPORTSGAMEODDS_API_KEY is not set" });
     }
 
-    // start_date/end_date query params let this be invoked manually for a
-    // backfill or a schema-verification test run against a populated date
-    // range; the scheduled cron call omits them and gets the default
-    // "today plus the next week" window.
     const requestUrl = new URL(req.url);
     const today = new Date();
     const defaultEnd = new Date(today);
     defaultEnd.setDate(defaultEnd.getDate() + 6);
-
     const startDate = requestUrl.searchParams.get("start_date") ?? isoDate(today);
     const endDate = requestUrl.searchParams.get("end_date") ?? isoDate(defaultEnd);
 
-    const gamesUrl = new URL("https://api.balldontlie.io/v1/games");
-    gamesUrl.searchParams.set("start_date", startDate);
-    gamesUrl.searchParams.set("end_date", endDate);
-    gamesUrl.searchParams.set("per_page", "100");
+    // Paginate on nextCursor. A week of NBA games is well under a page
+    // (limit=100), so this cap is just a safety net against a runaway loop.
+    const events: z.infer<typeof eventSchema>[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 10; page++) {
+      const url = new URL("https://api.sportsgameodds.com/v2/events");
+      url.searchParams.set("leagueID", "NBA");
+      url.searchParams.set("startsAfter", startDate);
+      url.searchParams.set("startsBefore", endDate);
+      url.searchParams.set("limit", "100");
+      if (cursor) url.searchParams.set("cursor", cursor);
 
-    const gamesRes = await fetch(gamesUrl, {
-      headers: { Authorization: `Bearer ${balldontlieKey}` },
-    });
-    if (!gamesRes.ok) {
-      throw new Error(`balldontlie /games returned ${gamesRes.status}: ${await gamesRes.text()}`);
+      const res = await fetch(url, { headers: { "x-api-key": apiKey } });
+      if (!res.ok) {
+        throw new Error(`SportsGameOdds /v2/events returned ${res.status}: ${await res.text()}`);
+      }
+      const json = eventsResponseSchema.parse(await res.json());
+      events.push(...json.data);
+      if (!json.nextCursor || json.data.length === 0) break;
+      cursor = json.nextCursor;
     }
-    const gamesJson = bdlGamesResponseSchema.parse(await gamesRes.json());
 
-    // Upsert teams (deduped from each game's home/visitor team).
-    const teamsById = new Map<number, z.infer<typeof bdlTeamSchema>>();
-    for (const game of gamesJson.data) {
-      teamsById.set(game.home_team.id, game.home_team);
-      teamsById.set(game.visitor_team.id, game.visitor_team);
+    // Upsert teams (deduped from each event's home/away side).
+    const teamsById = new Map<string, z.infer<typeof teamSideSchema>>();
+    for (const event of events) {
+      teamsById.set(event.teams.home.teamID, event.teams.home);
+      teamsById.set(event.teams.away.teamID, event.teams.away);
     }
     if (teamsById.size > 0) {
       const { error } = await supabase.from("teams").upsert(
         Array.from(teamsById.values()).map((t) => ({
-          id: t.id,
-          abbreviation: t.abbreviation,
-          name: t.name,
-          full_name: t.full_name,
-          conference: t.conference,
-          division: t.division,
+          id: t.teamID,
+          abbreviation: t.names.short,
+          name: t.names.medium,
+          full_name: t.names.long,
         })),
       );
       if (error) throw new Error(`teams upsert failed: ${error.message}`);
@@ -168,113 +185,128 @@ Deno.serve(async (req) => {
     }
 
     // Upsert games.
-    if (gamesJson.data.length > 0) {
+    if (events.length > 0) {
       const { error } = await supabase.from("games").upsert(
-        gamesJson.data.map((g) => ({
-          id: g.id,
-          season: g.season,
-          game_date: g.date.slice(0, 10),
-          home_team_id: g.home_team.id,
-          away_team_id: g.visitor_team.id,
-          status: isFinal(g.status) ? "final" : "scheduled",
-          home_score: g.home_team_score || null,
-          away_score: g.visitor_team_score || null,
+        events.map((e) => ({
+          id: e.eventID,
+          season: computeSeason(e.status.startsAt),
+          game_date: e.status.startsAt.slice(0, 10),
+          tip_time: e.status.startsAt,
+          home_team_id: e.teams.home.teamID,
+          away_team_id: e.teams.away.teamID,
+          status: e.status.completed ? "final" : e.status.live ? "live" : "scheduled",
+          home_score: e.teams.home.score ?? null,
+          away_score: e.teams.away.score ?? null,
           updated_at: new Date().toISOString(),
         })),
       );
       if (error) throw new Error(`games upsert failed: ${error.message}`);
-      summary.gamesUpserted = gamesJson.data.length;
+      summary.gamesUpserted = events.length;
     }
 
-    // Box scores: only real numbers we can trust from this endpoint are
-    // final scores. Advanced-stat proxies (pace/off/def rating) are left
-    // null here rather than fabricated from insufficient inputs.
-    const finishedGames = gamesJson.data.filter((g) => isFinal(g.status));
-    if (finishedGames.length > 0) {
-      const rows = finishedGames.flatMap((g) => [
-        { game_id: g.id, team_id: g.home_team.id, pts: g.home_team_score, opp_pts: g.visitor_team_score },
-        { game_id: g.id, team_id: g.visitor_team.id, pts: g.visitor_team_score, opp_pts: g.home_team_score },
-      ]);
-      const { error } = await supabase.from("team_game_box_scores").upsert(rows, { onConflict: "game_id,team_id" });
+    // Box scores + real pace/off/def rating estimates for completed games.
+    const boxScoreRows: Array<{
+      game_id: string;
+      team_id: string;
+      pts: number;
+      opp_pts: number;
+      possessions_est: number;
+      pace_est: number;
+      off_rating_est: number | null;
+      def_rating_est: number | null;
+    }> = [];
+    for (const event of events) {
+      const gameResults = event.results?.game;
+      if (!gameResults) continue;
+      const home = boxTeamStatsSchema.safeParse(gameResults.home);
+      const away = boxTeamStatsSchema.safeParse(gameResults.away);
+      if (!home.success || !away.success) continue;
+
+      const homePoss = possessionsEst(home.data);
+      const awayPoss = possessionsEst(away.data);
+      const paceEst = (homePoss + awayPoss) / 2;
+
+      boxScoreRows.push({
+        game_id: event.eventID,
+        team_id: event.teams.home.teamID,
+        pts: home.data.points,
+        opp_pts: away.data.points,
+        possessions_est: homePoss,
+        pace_est: paceEst,
+        off_rating_est: homePoss > 0 ? (100 * home.data.points) / homePoss : null,
+        def_rating_est: awayPoss > 0 ? (100 * away.data.points) / awayPoss : null,
+      });
+      boxScoreRows.push({
+        game_id: event.eventID,
+        team_id: event.teams.away.teamID,
+        pts: away.data.points,
+        opp_pts: home.data.points,
+        possessions_est: awayPoss,
+        pace_est: paceEst,
+        off_rating_est: awayPoss > 0 ? (100 * away.data.points) / awayPoss : null,
+        def_rating_est: homePoss > 0 ? (100 * home.data.points) / homePoss : null,
+      });
+    }
+    if (boxScoreRows.length > 0) {
+      const { error } = await supabase
+        .from("team_game_box_scores")
+        .upsert(boxScoreRows, { onConflict: "game_id,team_id" });
       if (error) throw new Error(`box scores upsert failed: ${error.message}`);
-      summary.boxScoresUpserted = rows.length;
+      summary.boxScoresUpserted = boxScoreRows.length;
     }
 
-    // Odds (optional — skip gracefully if no key yet).
-    if (!oddsApiKey) {
-      summary.warnings.push("ODDS_API_KEY is not set; skipped odds sync");
-    } else {
-      const oddsUrl = new URL("https://api.the-odds-api.com/v4/sports/basketball_nba/odds");
-      oddsUrl.searchParams.set("apiKey", oddsApiKey);
-      oddsUrl.searchParams.set("regions", "us");
-      oddsUrl.searchParams.set("markets", "h2h,spreads,totals");
-      oddsUrl.searchParams.set("oddsFormat", "american");
-
-      const oddsRes = await fetch(oddsUrl);
-      if (!oddsRes.ok) {
-        summary.warnings.push(`The Odds API returned ${oddsRes.status}: ${await oddsRes.text()}`);
-      } else {
-        const events = oddsEventsResponseSchema.parse(await oddsRes.json());
-
-        // Match by team full name + same UTC calendar date as our synced
-        // game. Name mismatches (e.g. abbreviated city names) are the main
-        // known risk here — flagged, not silently ignored, via `warnings`.
-        const gamesByTeamPairAndDate = new Map<string, (typeof gamesJson.data)[number]>();
-        for (const g of gamesJson.data) {
-          const key = matchKey(g.home_team.full_name, g.visitor_team.full_name, g.date.slice(0, 10));
-          gamesByTeamPairAndDate.set(key, g);
+    // Odds: team-level moneyline/spread/total only (statID=points,
+    // periodID=game, betTypeID in ml/sp/ou, statEntityID in home/away/all).
+    // Player props use different statEntityID/statID values and are out of
+    // scope until Phase 2.
+    const snapshotRows: Array<{
+      game_id: string;
+      book: string;
+      market: "moneyline" | "spread" | "total";
+      side: string;
+      line: number | null;
+      price: number;
+      fair_price: number | null;
+    }> = [];
+    for (const event of events) {
+      for (const entry of Object.values(event.odds ?? {})) {
+        if (
+          entry.statID !== "points" ||
+          entry.periodID !== "game" ||
+          !TEAM_MARKET_BET_TYPES.has(entry.betTypeID) ||
+          !TEAM_MARKET_ENTITIES.has(entry.statEntityID)
+        ) {
+          continue;
         }
+        const market = betTypeToMarket[entry.betTypeID];
+        const side = market === "total" ? entry.sideID : entry.statEntityID;
+        const fairPrice = entry.fairOdds ? parseInt(entry.fairOdds, 10) : null;
 
-        const snapshotRows: Array<{
-          game_id: number;
-          book: string;
-          market: "moneyline" | "spread" | "total";
-          side: string | null;
-          line: number | null;
-          price: number;
-        }> = [];
+        for (const [book, bm] of Object.entries(entry.byBookmaker ?? {})) {
+          if (bm.available === false || !bm.odds) continue;
+          const price = parseInt(bm.odds, 10);
+          if (Number.isNaN(price)) continue;
 
-        for (const event of events) {
-          const eventDate = event.commence_time.slice(0, 10);
-          const key = matchKey(event.home_team, event.away_team, eventDate);
-          const matchedGame = gamesByTeamPairAndDate.get(key);
-          if (!matchedGame) {
-            summary.oddsEventsUnmatched += 1;
-            continue;
-          }
-          summary.oddsEventsMatched += 1;
+          let line: number | null = null;
+          if (market === "spread" && bm.spread) line = parseFloat(bm.spread);
+          if (market === "total" && bm.overUnder) line = parseFloat(bm.overUnder);
 
-          for (const bookmaker of event.bookmakers) {
-            for (const market of bookmaker.markets) {
-              const dbMarket = marketKeyToDbMarket[market.key];
-              for (const outcome of market.outcomes) {
-                const side =
-                  dbMarket === "total"
-                    ? outcome.name.toLowerCase()
-                    : outcome.name === event.home_team
-                      ? "home"
-                      : outcome.name === event.away_team
-                        ? "away"
-                        : null;
-                snapshotRows.push({
-                  game_id: matchedGame.id,
-                  book: bookmaker.key,
-                  market: dbMarket,
-                  side,
-                  line: outcome.point ?? null,
-                  price: outcome.price,
-                });
-              }
-            }
-          }
-        }
-
-        if (snapshotRows.length > 0) {
-          const { error } = await supabase.from("odds_snapshots").insert(snapshotRows);
-          if (error) throw new Error(`odds_snapshots insert failed: ${error.message}`);
-          summary.oddsSnapshotsInserted = snapshotRows.length;
+          snapshotRows.push({
+            game_id: event.eventID,
+            book,
+            market,
+            side,
+            line: line != null && Number.isNaN(line) ? null : line,
+            price,
+            fair_price: fairPrice != null && Number.isNaN(fairPrice) ? null : fairPrice,
+          });
         }
       }
+    }
+    if (snapshotRows.length > 0) {
+      const { error } = await supabase.from("odds_snapshots").insert(snapshotRows);
+      if (error) throw new Error(`odds_snapshots insert failed: ${error.message}`);
+      summary.oddsSnapshotsInserted = snapshotRows.length;
     }
 
     await logSync(supabase, summary.warnings.length > 0 ? "partial" : "success", summary);
@@ -285,10 +317,6 @@ Deno.serve(async (req) => {
     return Response.json({ ok: false, error: message, summary });
   }
 });
-
-function matchKey(homeTeamName: string, awayTeamName: string, isoDateStr: string): string {
-  return `${homeTeamName.trim().toLowerCase()}|${awayTeamName.trim().toLowerCase()}|${isoDateStr}`;
-}
 
 async function logSync(
   supabase: ReturnType<typeof createClient>,
