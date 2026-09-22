@@ -57,6 +57,60 @@ export const oddsSnapshotRowSchema = z.object({
 });
 export type OddsSnapshotRow = z.infer<typeof oddsSnapshotRowSchema>;
 
+export const playerRowSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  team_id: z.string().nullable(),
+});
+export type PlayerRow = z.infer<typeof playerRowSchema>;
+
+export const playerGameStatRowSchema = z.object({
+  id: z.number(),
+  game_id: z.string(),
+  player_id: z.string(),
+  team_id: z.string().nullable(),
+  minutes: z.number().nullable(),
+  points: z.number().nullable(),
+  rebounds: z.number().nullable(),
+  assists: z.number().nullable(),
+  steals: z.number().nullable(),
+  blocks: z.number().nullable(),
+  turnovers: z.number().nullable(),
+  three_pointers_made: z.number().nullable(),
+  field_goals_made: z.number().nullable(),
+  field_goals_attempted: z.number().nullable(),
+  free_throws_attempted: z.number().nullable(),
+});
+export type PlayerGameStatRow = z.infer<typeof playerGameStatRowSchema>;
+
+export const playerPropStatSchema = z.enum([
+  "points",
+  "rebounds",
+  "assists",
+  "three_pointers_made",
+  "points_assists",
+  "points_rebounds",
+  "rebounds_assists",
+  "points_rebounds_assists",
+  "double_double",
+  "triple_double",
+]);
+export type PlayerPropStat = z.infer<typeof playerPropStatSchema>;
+
+export const playerPropSnapshotRowSchema = z.object({
+  id: z.number(),
+  game_id: z.string(),
+  player_id: z.string(),
+  stat: playerPropStatSchema,
+  book: z.string(),
+  side: z.string(),
+  line: z.number().nullable(),
+  price: z.number().nullable(),
+  fair_price: z.number().nullable(),
+  captured_at: z.string(),
+});
+export type PlayerPropSnapshotRow = z.infer<typeof playerPropSnapshotRowSchema>;
+
 export const syncLogStatusSchema = z.enum(["success", "partial", "error"]);
 
 export const syncLogRowSchema = z.object({
@@ -91,6 +145,21 @@ export interface Database {
         Row: OddsSnapshotRow;
         Insert: Omit<OddsSnapshotRow, "id" | "captured_at"> & { captured_at?: string };
         Update: Partial<OddsSnapshotRow>;
+      };
+      players: {
+        Row: PlayerRow;
+        Insert: PlayerRow;
+        Update: Partial<PlayerRow>;
+      };
+      player_game_stats: {
+        Row: PlayerGameStatRow;
+        Insert: Omit<PlayerGameStatRow, "id">;
+        Update: Partial<PlayerGameStatRow>;
+      };
+      player_prop_snapshots: {
+        Row: PlayerPropSnapshotRow;
+        Insert: Omit<PlayerPropSnapshotRow, "id" | "captured_at"> & { captured_at?: string };
+        Update: Partial<PlayerPropSnapshotRow>;
       };
       sync_log: {
         Row: SyncLogRow;

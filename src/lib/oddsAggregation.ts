@@ -74,7 +74,7 @@ export function computeBestLines(snapshots: OddsSnapshotRow[]): BestLine[] {
 }
 
 /** Most frequent line value in the group; ties broken by the smallest value. */
-function modeLine(lines: Array<number | null>): number | null {
+export function modeLine(lines: Array<number | null>): number | null {
   const counts = new Map<number | null, number>();
   for (const line of lines) {
     counts.set(line, (counts.get(line) ?? 0) + 1);

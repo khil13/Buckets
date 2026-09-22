@@ -46,10 +46,21 @@ export const sgoOddEntrySchema = z.object({
 });
 export type SgoOddEntry = z.infer<typeof sgoOddEntrySchema>;
 
+// Real roster entry, confirmed via pg_net probe: event.players is keyed by
+// playerID and gives a clean display name + team, unlike results.game's
+// player entries (siblings of home/away, no name/team of their own).
+export const sgoPlayerRosterEntrySchema = z.object({
+  playerID: z.string(),
+  name: z.string(),
+  teamID: z.string(),
+});
+export type SgoPlayerRosterEntry = z.infer<typeof sgoPlayerRosterEntrySchema>;
+
 export const sgoEventSchema = z.object({
   eventID: z.string(),
   teams: z.object({ home: sgoTeamSideSchema, away: sgoTeamSideSchema }),
   status: sgoStatusSchema,
+  players: z.record(sgoPlayerRosterEntrySchema).optional(),
   // Upcoming games return results: {} (no `game` key yet) rather than
   // omitting `results` or nulling it -- confirmed live, not guessed.
   results: z.object({ game: z.record(z.unknown()).optional() }).nullable().optional(),
@@ -72,6 +83,21 @@ export const sgoBoxTeamStatsSchema = z.object({
   freeThrowsAttempted: z.number(),
 });
 
+/** Real numbers trusted for prop hit-rate math, from a completed event's results.game.{PLAYER_ID}. */
+export const sgoBoxPlayerStatsSchema = z.object({
+  points: z.number(),
+  rebounds: z.number(),
+  assists: z.number(),
+  steals: z.number(),
+  blocks: z.number(),
+  turnovers: z.number(),
+  threePointersMade: z.number(),
+  fieldGoalsMade: z.number(),
+  fieldGoalsAttempted: z.number(),
+  freeThrowsAttempted: z.number(),
+  secondsPlayed: z.number(),
+});
+
 /** Team-level moneyline/spread/total oddIDs; player props use other statEntityID/statID values. */
 export const TEAM_MARKET_BET_TYPES = new Set(["ml", "sp", "ou"]);
 export const TEAM_MARKET_ENTITIES = new Set(["home", "away", "all"]);
@@ -79,4 +105,21 @@ export const betTypeToMarket: Record<string, "moneyline" | "spread" | "total"> =
   ml: "moneyline",
   sp: "spread",
   ou: "total",
+};
+
+// Player-prop statID -> our player_prop_snapshots.stat enum. periodID must
+// be "game" and betTypeID "ou" (line-based) or "yn" (double/triple-double,
+// no line) -- confirmed real oddID shapes, not guessed.
+export const PLAYER_PROP_BET_TYPES = new Set(["ou", "yn"]);
+export const playerPropStatIdToStat: Record<string, string> = {
+  points: "points",
+  rebounds: "rebounds",
+  assists: "assists",
+  threePointersMade: "three_pointers_made",
+  "points+assists": "points_assists",
+  "points+rebounds": "points_rebounds",
+  "rebounds+assists": "rebounds_assists",
+  "points+rebounds+assists": "points_rebounds_assists",
+  doubleDouble: "double_double",
+  tripleDouble: "triple_double",
 };
