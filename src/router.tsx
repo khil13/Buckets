@@ -4,6 +4,7 @@ import { Slate } from "./pages/Slate";
 import { GameDetail } from "./pages/GameDetail";
 import { PropBoard } from "./pages/PropBoard";
 import { PlayerDetail } from "./pages/PlayerDetail";
+import { NotFound } from "./pages/NotFound";
 
 // Hash routing avoids needing server-side rewrites for a client-rendered
 // SPA — required on GitHub Pages (a static host with no rewrite rules).
@@ -17,6 +18,7 @@ export const router = createHashRouter([
       { path: "/game/:gameId", element: <GameDetail /> },
       { path: "/props", element: <PropBoard /> },
       { path: "/player/:playerId", element: <PlayerDetail /> },
+      { path: "*", element: <NotFound /> },
     ],
   },
 ]);
