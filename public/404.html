@@ -1,0 +1,23 @@
+<!doctype html>
+<!--
+  GitHub Pages has no server-side rewrites. This app uses hash-based
+  routing precisely to avoid needing one (see src/router.tsx), but a
+  path-style deep link (e.g. /Buckets/props instead of /Buckets/#/props)
+  still hits this static 404 before any app JS loads. Redirect it into
+  the equivalent hash route instead of dead-ending here.
+
+  GH-Pages-specific: the base path is hardcoded since this file is copied
+  verbatim (not processed by Vite's HTML pipeline) — update it if the
+  repo/deployment path ever changes.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      var base = "/Buckets/";
+      var path = location.pathname.startsWith(base) ? location.pathname.slice(base.length) : "";
+      location.replace(base + "#/" + path + location.search);
+    </script>
+  </head>
+  <body></body>
+</html>
